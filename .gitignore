@@ -1,0 +1,19 @@
+# user data / local state
+data.json
+
+# backups
+*.bak-*
+
+# obsidian / editor
+.obsidian/
+.vscode/
+.idea/
+
+# os
+.DS_Store
+Thumbs.db
+
+# node (if you later convert to a TS build)
+node_modules/
+dist/
+main.js.map
