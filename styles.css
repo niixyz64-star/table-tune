@@ -27,7 +27,7 @@
 }
 .tcr-wrap::-webkit-scrollbar-track { background: transparent; }
 
-/* Row-resize handle: bottom edge of the leftmost column's cells (edit mode).
+/* Row-resize handle: bottom edge of any cell in a row (edit mode).
    cursor row-resize; mirrors the column handle's look. */
 .tcr-row-handle {
   position: absolute;
