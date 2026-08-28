@@ -437,24 +437,33 @@ module.exports = class TableColumnResize extends Plugin {
 
     // Drag handles ONLY in edit mode (requirement: resize is edit-mode only).
     if (allowDrag) {
-      headCols.forEach((th, i) => {
-        th.style.position = 'relative';
-        const handle = document.createElement('div');
-        handle.className = 'tcr-handle';
-        handle.addEventListener('pointerdown', (e) => this.startDrag(e, colgroup, i, path, tid));
-        th.appendChild(handle);
-      });
-      // Row-resize handles on the leftmost cell of every row (edit mode only).
+      // Column handles on EVERY cell of each column: dragging the right edge of
+      // any cell (header or body) resizes the whole column.
       const rows = table.querySelectorAll('tr');
+      rows.forEach((tr) => {
+        const cells = tr.querySelectorAll('th, td');
+        cells.forEach((cell, i) => {
+          if (i >= n) return; // safety: more cells than header columns
+          if (cell.querySelector('.tcr-handle')) return;
+          cell.style.position = 'relative';
+          const handle = document.createElement('div');
+          handle.className = 'tcr-handle';
+          handle.addEventListener('pointerdown', (e) => this.startDrag(e, colgroup, i, path, tid));
+          cell.appendChild(handle);
+        });
+      });
+      // Row handles on EVERY cell of each row: dragging the bottom edge of any
+      // cell resizes the whole row.
       rows.forEach((tr, i) => {
-        const firstCell = tr.querySelector('th:first-child, td:first-child');
-        if (!firstCell) return;
-        firstCell.style.position = 'relative';
-        if (firstCell.querySelector('.tcr-row-handle')) return;
-        const rh = document.createElement('div');
-        rh.className = 'tcr-row-handle';
-        rh.addEventListener('pointerdown', (e) => this.startRowDrag(e, tr, i, path, tid));
-        firstCell.appendChild(rh);
+        const cells = tr.querySelectorAll('th, td');
+        cells.forEach((cell) => {
+          if (cell.querySelector('.tcr-row-handle')) return;
+          cell.style.position = 'relative';
+          const rh = document.createElement('div');
+          rh.className = 'tcr-row-handle';
+          rh.addEventListener('pointerdown', (e) => this.startRowDrag(e, tr, i, path, tid));
+          cell.appendChild(rh);
+        });
       });
     }
   }
