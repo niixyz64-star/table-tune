@@ -12,9 +12,9 @@ Tune your Obsidian tables: drag column/row borders to resize them, and the sizes
 
 ## Installation
 
-### Community plugin list (pending review)
+### Community plugin list
 
-Once approved, install from **Settings → Community plugins → Browse** and search "TableTune".
+Install from **Settings → Community plugins → Browse** and search "TableTune".
 
 ### Manual / BRAT
 
