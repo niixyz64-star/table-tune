@@ -45,6 +45,12 @@ Undo/redo is session history, not a persistent backup: operations performed befo
 
 请使用 Obsidian 1.14.4 或更新版本。更新时保留 `data.json`，并先备份笔记。合并与样式由插件数据管理，不等同于可移植的 Markdown 原生合并单元格。
 
+## Inspiration / 交互设计参考
+
+TableTune's table interactions are primarily inspired by Feishu Docs. Its table editing feels smooth and intuitive, and this plugin aims to bring a similar interaction experience to Obsidian. This is an independent project, not an official Feishu product or an affiliated project.
+
+觉得飞书文档里的表格交互很丝滑、很好用，因此 TableTune 主要参考了飞书文档的表格交互方式，希望把类似的流畅编辑体验带到 Obsidian 中。本项目为独立开发，与飞书官方无隶属或合作关系。
+
 ## License
 
 MIT
