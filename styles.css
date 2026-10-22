@@ -1,3 +1,19 @@
+/* Markdown still requires a header row in source, but its default appearance
+   is the same as body cells. Explicit **bold** content remains bold. */
+table[data-tcr] {
+  --table-header-weight: inherit;
+  --table-header-font: inherit;
+  --table-header-size: var(--table-text-size);
+  --table-header-color: var(--table-text-color);
+  --table-header-background: var(--table-background);
+  --table-header-background-hover: var(--table-row-background-hover);
+  --table-header-border-width: var(--table-border-width);
+  --table-header-border-color: var(--table-border-color);
+}
+table[data-tcr] th {
+  font-weight: inherit !important;
+}
+
 .tcr-handle {
   position: absolute;
   top: 0;
@@ -30,6 +46,7 @@
 /* Row-resize handle: bottom edge of any cell in a row (edit mode).
    cursor row-resize; mirrors the column handle's look. */
 .tcr-row-handle {
+  display: none !important;
   position: absolute;
   bottom: -3px;
   left: 0;
@@ -58,3 +75,191 @@
 .markdown-preview-section.tcr-has-wrap { overflow-x: visible; }
 
 
+
+/* ---- Merge cells / selection ---- */
+/* Selection appearance is intentionally left entirely to Obsidian. The class
+   only records Table Tune's logical merge/delete range. */
+/* Compatibility cleanup for edge elements drawn by older Table Tune builds. */
+.tcr-sel-edge { display: none !important; }
+/* Keep Obsidian's theme colours, but paint the completed rectangle once. */
+table.tcr-selection-owned :is(th,td).is-selected::after {
+  display: none !important;
+}
+/* A plain click edits text; only an explicit range gets selection paint. */
+table.tcr-cell-editing :is(th,td).is-selected::after { display: none !important; }
+/* Native edge classes describe the unmerged Markdown grid. Suppress that
+   renderer for every enhanced table, including frames before ownership sync. */
+.markdown-source-view.mod-cm6 .cm-table-widget table[data-tcr] :is(th,td)::after,
+.markdown-source-view.mod-cm6 .cm-table-widget:not(.is-selected) table[data-tcr]::after {
+  display: none !important;
+}
+/* Document selection that spans a table is different from a cell range.
+   Keep the native whole-table paint so the visible selection agrees with
+   CodeMirror's source range (including ordinary Backspace/Delete). */
+.markdown-source-view.mod-cm6 .cm-table-widget.is-selected table[data-tcr]::after {
+  display: block !important;
+  pointer-events: none;
+  z-index: 7;
+  inset: 0;
+  border: var(--table-selection-border-width, 2px) solid var(--table-selection-border-color, var(--interactive-accent, #9673ff));
+  box-sizing: border-box;
+}
+.tcr-selection-rect {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  box-sizing: border-box;
+  background: var(--table-selection, rgba(139, 100, 235, 0.1));
+  border: var(--table-selection-border-width, 2px) solid var(--table-selection-border-color, var(--interactive-accent, #9673ff));
+  border-radius: var(--table-selection-border-radius, 2px);
+}
+/* Cell ranges and text editing are mutually exclusive visual states. Empty
+   selected lines otherwise resemble multiple carets across neighbouring cells. */
+table.tcr-selection-owned,
+table.tcr-selection-owned * {
+  --text-selection: transparent;
+  caret-color: transparent !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+table.tcr-selection-owned ::selection { background: transparent !important; }
+table.tcr-selection-owned .cm-cursorLayer,
+table.tcr-selection-owned .cm-selectionLayer { display: none !important; }
+.table-row-drag-handle.tcr-axis-selected,
+.table-col-drag-handle.tcr-axis-selected {
+  opacity: 1 !important;
+  background: var(--table-drag-handle-background-active, var(--interactive-accent)) !important;
+  color: var(--table-drag-handle-color-active, white) !important;
+}
+table[data-tcr] .table-row-drag-handle,
+table[data-tcr] .table-col-drag-handle { display: none !important; }
+table.tcr-selection-owned .tcr-axis-cell-selected::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: var(--table-selection, rgba(139,100,235,.12));
+}
+/* A closed Shift range uses one filled rectangle, not a second per-cell fill. */
+table.tcr-selection-owned .tcr-axis-cell-selected.tcr-sel::before { display: none; }
+.tcr-axis-rail { position: absolute; z-index: 7; }
+.tcr-axis-pick {
+  position: absolute;
+  cursor: pointer;
+  box-sizing: border-box;
+  border-radius: 2px;
+  opacity: 0;
+  background: var(--background-modifier-hover, #eee);
+}
+.tcr-axis-rail:hover .tcr-axis-pick { opacity: .6; }
+.tcr-axis-pick:hover { opacity: 1 !important; }
+.tcr-axis-pick.tcr-axis-selected {
+  opacity: 1 !important;
+  background: var(--table-selection-border-color, var(--interactive-accent, #9673ff));
+}
+.tcr-axis-insertions,
+.tcr-axis-row-insertions { pointer-events: none; z-index: 8; }
+.tcr-axis-insert {
+  position: absolute;
+  pointer-events: auto;
+  opacity: 0;
+  border-radius: 50%;
+  text-align: center;
+  font: bold 14px/14px sans-serif;
+  color: white;
+  background: var(--interactive-accent, #448aff);
+  cursor: pointer;
+}
+.tcr-axis-insert:hover { opacity: 1; }
+.tcr-axis-insert:hover::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  top: 14px;
+  left: 6px;
+  height: var(--tcr-table-height);
+  border-left: 2px solid var(--interactive-accent, #448aff);
+}
+.tcr-axis-insert[data-tcr-insert-axis="row"]:hover::after {
+  top: 6px;
+  left: 14px;
+  width: var(--tcr-table-width);
+  height: 0;
+  border-left: 0;
+  border-top: 2px solid var(--interactive-accent, #448aff);
+}
+/* Use boundary insertion controls instead of the native full-edge buttons. */
+.cm-table-widget:has(table[data-tcr]) :is(.table-row-btn, .table-col-btn) { display: none !important; }
+table[data-tcr] [data-tcr-align] :is(.table-cell-content, .table-cell-wrapper, .cm-content, .cm-line) {
+  text-align: inherit !important;
+}
+.tcr-merged-hidden { display: none; }
+
+/* One logical layout across THEAD/TBODY; retain editor-owned DOM and indexes. */
+table.tcr-grid-table { display: grid !important; gap: 0 !important; border-spacing: 0 !important; }
+table.tcr-grid-table > thead,
+table.tcr-grid-table > tbody,
+table.tcr-grid-table > tfoot,
+table.tcr-grid-table > thead > tr,
+table.tcr-grid-table > tbody > tr,
+table.tcr-grid-table > tfoot > tr,
+table.tcr-grid-table > tr { display: contents !important; }
+table.tcr-grid-table > colgroup { display: none !important; }
+table.tcr-grid-table :is(th, td) {
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  min-height: 0;
+  width: auto !important;
+  height: auto !important;
+  overflow-wrap: anywhere;
+}
+table.tcr-grid-table :is(.table-cell-wrapper, .table-cell-content, .cm-editor, .cm-content) {
+  box-sizing: border-box;
+  min-width: 0 !important;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.tcr-axis-rail.tcr-resizing { pointer-events: none !important; }
+table.tcr-grid-table .tcr-merged-hidden { display: none !important; }
+
+/* ---- Floating Merge/Split toolbar ---- */
+.tcr-merge-toolbar {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px;
+  max-width: calc(100vw - 8px);
+  overflow-x: auto;
+  background: var(--background-primary, #fff);
+  border: 1px solid var(--background-modifier-border, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.04);
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.tcr-merge-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0;
+  border-radius: 5px;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-muted, #555);
+  cursor: pointer;
+}
+.tcr-merge-toolbar button:hover { background: var(--background-modifier-hover, #f1f1f4); color: var(--text-normal, #222); }
+.tcr-merge-toolbar button[aria-pressed="true"] { background: var(--background-modifier-hover, #f1f1f4); color: var(--interactive-accent, #9673ff); }
+.tcr-merge-toolbar button:focus-visible { outline: 2px solid var(--interactive-accent, #9673ff); outline-offset: -2px; }
+.tcr-merge-toolbar button.tcr-toolbar-danger:hover { color: var(--text-error, #d44); }
+.tcr-merge-toolbar svg { width: 17px; height: 17px; stroke-width: 1.75; }
+.tcr-toolbar-separator { flex: 0 0 1px; height: 18px; margin: 0 4px; background: var(--background-modifier-border, #ddd); }

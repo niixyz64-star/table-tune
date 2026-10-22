@@ -1,0 +1,36 @@
+# Changelog
+
+## 2.0.0 — 2026-10-22
+
+### Added
+
+- Merge/split cells and expand drag/Shift selections around intersecting merges.
+- Text-first selection, partial text selection, and whole-table highlighting when selecting from outside a table.
+- A horizontal icon toolbar for table operations and horizontal/vertical alignment.
+- Multi-cell clipboard operations and supported external HTML, TSV and Markdown table pasting.
+- Native Ctrl+Z undo and Ctrl+Y redo, with table source edits and layout metadata grouped into a single history step.
+
+### Fixed
+
+- First-row text disappearing after alignment or merging.
+- Operations on one table affecting another table in the same note.
+- Column widths snapping back after dragging or changing on first text input.
+- Merged-cell borders becoming misaligned at minimum column width and creating the appearance of an extra cell.
+- Disconnected selection outlines, click-only merged-cell highlighting and repeated caret artifacts during cell selection.
+
+### Changed
+
+- Preserve displayed column widths during text editing; use border dragging to resize.
+- Use ordinary first-row text styling instead of forced bold.
+- Require Obsidian 1.14.4 or newer; Windows/Obsidian 1.14.4 is the verified environment.
+
+### Upgrade notes
+
+- Preserve `data.json` and back up your vault before upgrading.
+- Table layout uses plugin metadata and invisible identifiers in table source; other Markdown renderers do not reproduce all presentation features.
+- Undo history is session-scoped and does not restore operations from before reloading the plugin/editor.
+
+## 1.1.5
+
+- Resize columns and rows from cell borders.
+- Existing releases and tags are retained unchanged.

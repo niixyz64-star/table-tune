@@ -1,9 +1,9 @@
 {
   "id": "table-tune",
   "name": "TableTune",
-  "version": "1.1.5",
-  "minAppVersion": "1.4.0",
-  "description": "Resize table columns and rows by dragging borders in Edit mode; the Reading view mirrors the same layout automatically. Sizes are remembered per table.",
+  "version": "2.0.0",
+  "minAppVersion": "1.14.4",
+  "description": "Edit tables with stable widths, merged cells, text-first selection, clipboard support, alignment tools and native undo/redo. Layout is remembered per table.",
   "author": "DH mini",
   "isDesktopOnly": false
 }
