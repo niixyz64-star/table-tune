@@ -88,8 +88,9 @@ module.exports = class TableColumnResize extends Plugin {
       }
     };
     document.addEventListener('pointerdown', this._docPointer, true);
-    this._onKey = (e) => { if (!this.handleTableHistoryKey(e) && !this.handleCellEnter(e)) this.handleCellSelectAll(e); };
+    this._onKey = (e) => { if (!this.handleSelectedCellKey(e) && !this.handleTableHistoryKey(e) && !this.handleCellEnter(e)) this.handleCellSelectAll(e); };
     document.addEventListener('keydown', this._onKey, true);
+    this.installSelectedCellCommands();
     this.registerEvent(this.app.workspace.on('editor-menu', (menu) => this.populateEditorMenu(menu)));
 
     this._onResize = () => {
@@ -112,6 +113,7 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   onunload() {
+    this.uninstallSelectedCellCommands();
     if(this._historyOriginals)for(const [name,method] of this._historyOriginals)this[name]=method;
     if(this._columnDragCleanup)this._columnDragCleanup();
     if(this._tableCopy)document.removeEventListener('copy',this._tableCopy,true);
@@ -1762,12 +1764,54 @@ module.exports = class TableColumnResize extends Plugin {
     });
   }
 
-  clearSelectedCellContents() {
+  installSelectedCellCommands() {
+    const commands=this.app?.commands;
+    if(this._selectedCommandBinding || typeof commands?.executeCommand!=='function')return;
+    const plugin=this,original=commands.executeCommand;
+    const wrapped=function(command,event,...args){
+      // Obsidian's hotkey scope executes at window capture, before our document
+      // key listener. Intercept only bold's command, not the global keymap.
+      if(command?.id==='editor:toggle-bold' && plugin.handleSelectedCellKey({
+        key:'b',ctrlKey:true,isComposing:event?.isComposing,
+        target:event?.target || document.activeElement || document.body,
+        preventDefault:()=>event?.preventDefault?.(),
+        stopImmediatePropagation:()=>event?.stopImmediatePropagation?.(),
+      }))return true;
+      return original.call(this,command,event,...args);
+    };
+    commands.executeCommand=wrapped;
+    this._selectedCommandBinding={commands,original,wrapped};
+  }
+
+  uninstallSelectedCellCommands() {
+    const binding=this._selectedCommandBinding;
+    if(binding && binding.commands.executeCommand===binding.wrapped)binding.commands.executeCommand=binding.original;
+    this._selectedCommandBinding=null;
+  }
+
+  handleSelectedCellKey(e) {
+    const key=e.key?.toLowerCase(),bold=(e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && key==='b';
+    const clear=key==='delete' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+    if((!bold && !clear) || e.isComposing || e.target.closest?.('input,textarea,.modal'))return false;
+    const sel=this._sel,editor=this.activeEditor(),session=editor?.editorComponent?.tableCell;
+    if(!sel || !sel.table.isConnected || this.currentPath()!==sel.path || !editor)return false;
+    if(!(editor.cm?.dom?.contains(e.target) || session?.cm?.contentDOM?.contains(e.target) ||
+      sel.table.contains(e.target) || e.target.closest?.('.tcr-merge-toolbar,.tcr-axis-rail') ||
+      e.target===document.body))return false;
+    e.preventDefault();e.stopImmediatePropagation();
+    this.clearSelectedCellContents(bold?'bold':'clear');
+    return true;
+  }
+
+  clearSelectedCellContents(mode='clear') {
     const sel=this._sel,editor=this.activeEditor();
     if(!sel || !editor || !sel.table.isConnected || this.currentPath()!==sel.path)return;
     const info=this.tableSourceInfo(editor,sel.table);
     if(!info?.rowSources)return new Notice('TableTune: 无法定位表格，清空已取消');
-    const selected=this.selectionCells(sel),changes=[];
+    const selected=this.alignmentSelectionCells(sel),changes=[];
+    const texts=info.grid.flatMap((row,r)=>row.filter((text,c)=>selected.has(r+','+c))
+      .map(text=>this.stripTableIdentity(text).trim())).filter(Boolean);
+    const unbold=mode==='bold' && texts.length>0 && texts.every(text=>/^\*\*[\s\S]*\*\*$/.test(text));
     const needsId=Array.from(selected).some(k=>k.startsWith('0,'));
     const uid=info.uid || (needsId?'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,8):null);
     for(let r=0;r<info.grid.length;r++){
@@ -1775,7 +1819,14 @@ module.exports = class TableColumnResize extends Plugin {
       if(ranges.length!==info.grid[r].length)return new Notice('TableTune: 表格结构不完整，清空已取消');
       for(let c=0;c<ranges.length;c++){
         const range=ranges[c];
-        let after=selected.has(r+','+c)?'':range.text;
+        let after=range.text;
+        if(selected.has(r+','+c)){
+          after='';
+          if(mode==='bold'){
+            const text=this.stripTableIdentity(range.text).trim(),already=/^\*\*[\s\S]*\*\*$/.test(text);
+            after=!text?range.text:unbold?text.slice(2,-2):already?text:'**'+text+'**';
+          }
+        }
         if(r===0 && c===0 && uid)after=this.encodeInvisibleUid(uid)+this.stripTableIdentity(after);
         if(after!==range.text)changes.push({from:row.from+range.from,to:row.from+range.to,insert:after});
       }
@@ -1950,6 +2001,17 @@ module.exports = class TableColumnResize extends Plugin {
     if (existing) return native;
     const plugin=this,original=native.selectCells;
     const wrapped=function(anchor,head,...args) {
+      // A completed pointer range remains authoritative until the next user
+      // gesture. Native mouseup/RAF callbacks may still carry an older anchor.
+      const owned=plugin._pointerRange;
+      if(owned && owned===plugin._sel && owned.table===table){
+        const first=this.getCellAt(owned.r1,owned.c1),last=this.getCellAt(owned.r2,owned.c2);
+        if(first && last)return original.call(this,first,last,...args);
+        return;
+      }
+      // Only an explicit keyboard range gesture may import a native range.
+      // Source edits/merge rerenders can replay an obsolete native anchor.
+      if(table._tcrNativeRangeBlocked && anchor!==head)return;
       if (plugin._drag?.table===table && plugin._drag.textPending) return;
       if (!table.isConnected || !anchor || !head || anchor===head) return original.call(this,anchor,head,...args);
       const path=table.dataset.tcrPath || plugin.currentPath(),tid=plugin.tableId(table);
@@ -1979,6 +2041,8 @@ module.exports = class TableColumnResize extends Plugin {
 
   setupCellSelection(table, path, tid) {
     if (table._tcrSelectionCleanup) return;
+    table._tcrNativeRangeBlocked=true;
+    table.querySelectorAll('.is-selected').forEach(cell=>cell.classList.remove('is-selected'));
     // Obsidian can establish selection through mouse/keyboard handlers after
     // our pointer event, or replace the table DOM entirely. Reconcile its raw
     // physical-cell selection with merged logical rectangles as well.
@@ -1987,7 +2051,11 @@ module.exports = class TableColumnResize extends Plugin {
       if (nativeFrame) return;
       nativeFrame = requestAnimationFrame(() => {
         nativeFrame = 0;
-        if (!table.isConnected || (this._drag?.table===table && (this._drag.active || this._drag.textPending)) || (this._sel?.table===table && this._sel.axis)) return;
+        if(table._tcrNativeRangeBlocked){
+          table.querySelectorAll('.is-selected').forEach(cell=>cell.classList.remove('is-selected'));
+          return;
+        }
+        if (!table.isConnected || (this._pointerRange===this._sel && this._sel?.table===table) || (this._drag?.table===table && (this._drag.active || this._drag.textPending)) || (this._sel?.table===table && this._sel.axis)) return;
         const native=this.bindNativeTableSelection(table);
         // Correct native bounds too (copy/delete/keyboard must agree with paint).
         if (native?.selectionAnchor && native.selectionHead && native.selectionAnchor!==native.selectionHead) {
@@ -2054,7 +2122,29 @@ module.exports = class TableColumnResize extends Plugin {
     table.addEventListener('pointerdown', cellDown, true);
     table.addEventListener('mousedown',shiftMouse,true);
     table.addEventListener('contextmenu', contextMenu, true);
+    const releaseIntent=e=>{
+      // Toolbar/axis actions still need the established range. Ordinary cell
+      // pointerdown clears it in startCellDrag; only Shift navigation imports
+      // native keyboard ranges, never an unrelated key or late callback.
+      if(e.type==='keydown'){
+        if(e.shiftKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End'].includes(e.key) &&
+          (table.contains(e.target) || this.activeEditor()?.editorComponent?.tableCell?.table?.tableEl===table)){
+          this._pointerRange=null;table._tcrNativeRangeBlocked=false;
+        }
+      }else this._pointerRange=null;
+    };
+    const releaseMouse=e=>{
+      if(this._pointerRange===this._sel && this._sel?.table===table){e.preventDefault();e.stopImmediatePropagation();}
+    };
+    // Consume compatibility events from the completed drag only. A genuine
+    // next click begins with pointerdown and releases ownership first.
+    window.addEventListener('click',releaseMouse,true);
+    window.addEventListener('pointerdown',releaseIntent,true);
+    window.addEventListener('keydown',releaseIntent,true);
     table._tcrSelectionCleanup = () => {
+      window.removeEventListener('click',releaseMouse,true);
+      window.removeEventListener('pointerdown',releaseIntent,true);
+      window.removeEventListener('keydown',releaseIntent,true);
       this.unbindNativeTableSelection(table);
       nativeObserver.disconnect();
       if (nativeFrame) cancelAnimationFrame(nativeFrame);
@@ -2322,7 +2412,7 @@ module.exports = class TableColumnResize extends Plugin {
         });
       }
     };
-    const onUp = () => {
+    const onUp = (ev) => {
       window.removeEventListener('pointermove', onMove, true);
       window.removeEventListener('pointerup', onUp, true);
       window.removeEventListener('mousemove', onTextMouseMove, true);
@@ -2332,7 +2422,11 @@ module.exports = class TableColumnResize extends Plugin {
         this.clearMergeSelection();
         if (d.textPending && d.textExit) this.selectCellDragText(d,true);
       }
-      if(d?.active)this.refreshMergeToolbar();
+      if(d?.active){
+        ev.preventDefault();ev.stopImmediatePropagation();
+        this._pointerRange=this._sel;
+        this.refreshMergeToolbar();
+      }
     };
     window.addEventListener('pointermove', onMove, true);
     window.addEventListener('pointerup', onUp, true);
@@ -2482,6 +2576,12 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   clearMergeSelection() {
+    this._pointerRange=null;
+    const table=this._sel?.table;
+    if(table){
+      table._tcrNativeRangeBlocked=true;
+      table.querySelectorAll('.is-selected').forEach(cell=>cell.classList.remove('is-selected'));
+    }
     if (this._selectionOverlay) { this._selectionOverlay.remove(); this._selectionOverlay = null; }
     if (this._selectionHost) {
       this._selectionHost.style.position = this._selectionHostPosition;
