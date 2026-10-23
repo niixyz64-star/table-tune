@@ -435,7 +435,7 @@ module.exports = class TableColumnResize extends Plugin {
         }),
       ]);
       this._historyOriginals=new Map();
-      for(const name of ['mergeSelectedCells','splitRegion','insertTableAxis','deleteSelectionAxis','setSelectionAlignment','handleTablePaste']){
+      for(const name of ['mergeSelectedCells','splitRegion','insertTableAxis','deleteSelectionAxis','setSelectionAlignment','handleTablePaste','clearSelectedCellContents']){
         const original=this[name];this._historyOriginals.set(name,original);
         this[name]=(...args)=>this.runTableHistory(()=>original.apply(this,args));
       }
@@ -1762,6 +1762,34 @@ module.exports = class TableColumnResize extends Plugin {
     });
   }
 
+  clearSelectedCellContents() {
+    const sel=this._sel,editor=this.activeEditor();
+    if(!sel || !editor || !sel.table.isConnected || this.currentPath()!==sel.path)return;
+    const info=this.tableSourceInfo(editor,sel.table);
+    if(!info?.rowSources)return new Notice('TableTune: 无法定位表格，清空已取消');
+    const selected=this.selectionCells(sel),changes=[];
+    const needsId=Array.from(selected).some(k=>k.startsWith('0,'));
+    const uid=info.uid || (needsId?'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,8):null);
+    for(let r=0;r<info.grid.length;r++){
+      const row=info.rowSources[r],ranges=this.rowCellRanges(row.text);
+      if(ranges.length!==info.grid[r].length)return new Notice('TableTune: 表格结构不完整，清空已取消');
+      for(let c=0;c<ranges.length;c++){
+        const range=ranges[c];
+        let after=selected.has(r+','+c)?'':range.text;
+        if(r===0 && c===0 && uid)after=this.encodeInvisibleUid(uid)+this.stripTableIdentity(after);
+        if(after!==range.text)changes.push({from:row.from+range.from,to:row.from+range.to,insert:after});
+      }
+    }
+    if(!changes.length)return;
+    this.dispatchTableChanges(editor,changes,info.toPos);
+    const tid=uid?'u'+uid:sel.tid;
+    if(tid!==sel.tid)this.adoptStableTableId(sel.table,sel.path,sel.tid,tid);
+    const ordinal=this.tablePeers(sel.table).indexOf(sel.table);
+    this.clearMergeSelection();
+    this.persist();
+    this.rekeyAfterSourceChange(sel.path,tid,ordinal,sel.table);
+  }
+
   splitSelectedCell() {
     const sel = this._sel;
     if (!sel || sel.axis || !this.isMergeRegion(sel)) return;
@@ -2502,7 +2530,7 @@ module.exports = class TableColumnResize extends Plugin {
       const title=action.title,group=/顶部对齐|垂直居中|底部对齐/.test(title)?'vertical-align':/对齐/.test(title)?'align':/删除/.test(title)?'delete':/插入/.test(title)?'insert':'merge';
       if(previousGroup && previousGroup!==group){const sep=document.createElement('span');sep.className='tcr-toolbar-separator';sep.setAttribute('role','separator');bar.appendChild(sep);}
       previousGroup=group;
-      const icon=title==='合并单元格'?'combine':title==='拆分单元格'?'split':
+      const icon=title==='清空内容'?'eraser':title==='合并单元格'?'combine':title==='拆分单元格'?'split':
         title==='左对齐'?'align-left':title==='居中对齐'?'align-center':title==='右对齐'?'align-right':
         title==='顶部对齐'?'align-vertical-justify-start':title==='垂直居中'?'align-vertical-justify-center':title==='底部对齐'?'align-vertical-justify-end':
         /上方/.test(title)?'arrow-up-to-line':/下方/.test(title)?'arrow-down-to-line':
@@ -2566,6 +2594,7 @@ module.exports = class TableColumnResize extends Plugin {
   // ---- native right-click menu (injected into Obsidian's editor menu) ---
   populateEditorMenu(menu) {
     const sel = this._sel;
+    if(sel)menu.addItem(item=>{item.setTitle('清空内容');item.onClick(()=>this.clearSelectedCellContents());});
     if (sel && sel.axis) {
       menu.addItem(item => {
         const count = sel.indices.size;

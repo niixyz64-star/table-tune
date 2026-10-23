@@ -11,6 +11,7 @@ Requires **Obsidian 1.14.4 or newer**. Tested against Obsidian 1.14.4 on Windows
 - Click a cell to place the caret. Drag within text to select part of it; continue beyond the text to select cells.
 - Copy and paste cell ranges, including supported external HTML tables, tab-separated text and Markdown tables.
 - Insert/delete rows and columns, set horizontal alignment, and choose top/middle/bottom vertical alignment from the icon toolbar.
+- Clear selected cell contents with the eraser icon while retaining merged regions, column widths and alignment; undo/redo is supported.
 - Use **Ctrl+Z** to undo and **Ctrl+Y** to redo. Table edits and layout metadata participate in native editor history. On macOS, use Command in place of Ctrl; Command+Shift+Z is also supported for redo.
 - Keep tables in the same note independent. The first row uses ordinary text styling rather than forced bold text.
 - Select across a table from outside it to highlight it for deletion.

@@ -2,6 +2,12 @@
 
 ## 2.0.0 — 2026-10-22
 
+### Updated package — 2026-10-23
+
+- Added an eraser icon to clear selected cell contents without deleting rows/columns or changing merged regions, widths or alignment. Supports native undo/redo.
+- Replaced the original 2.0.0 package at the author's request; the version number is unchanged. Existing installations may need a manual reinstall to receive this replacement.
+- A report of first-row text disappearing after merging remains under investigation; this replacement does not claim to resolve that report.
+
 ### Added
 
 - Merge/split cells and expand drag/Shift selections around intersecting merges.
