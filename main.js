@@ -1850,13 +1850,34 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   // ---- table clipboard (separate from ordinary text editing) ----------
+  clipboardSize(value) {
+    if(typeof value!=='number' && (typeof value!=='string' || !/^\d+(?:\.\d+)?(?:px)?$/.test(value.trim())))return null;
+    const size=parseFloat(value);
+    return Number.isFinite(size) && size>0 && size<=100000 ? size+'px' : null;
+  }
+
+  clipboardLayout(table,path,tid,rows,cols) {
+    const savedWidths=this.getWidths(path,tid,table.rows[0]?.cells.length || 0) || [];
+    const savedHeights=this.getRowHeights(path,tid) || [];
+    const tracks=table.classList.contains('tcr-grid-table') ? getComputedStyle(table).gridTemplateRows.split(' ') : [];
+    const columns=Array.from(table.querySelector('colgroup')?.children || []);
+    return {
+      columnWidths:cols.map(c=>this.clipboardSize(columns[c]?.getBoundingClientRect().width) ||
+        this.clipboardSize(columns[c]?.style.width) || this.clipboardSize(savedWidths[c]) ||
+        this.clipboardSize(Array.from(table.rows).map(row=>row.cells[c]).find(cell=>cell && !cell.classList.contains('tcr-merged-hidden') && cell.colSpan===1)?.getBoundingClientRect().width)),
+      rowHeights:rows.map(r=>this.clipboardSize(tracks[r]) || this.clipboardSize(table.rows[r]?.getBoundingClientRect().height) || this.clipboardSize(savedHeights[r])),
+    };
+  }
+
   handleTableCopy(e) {
-    const sel=this._sel;
+    const editor=this.activeEditor();
+    const whole=editor?.cm?.dom?.querySelector('.cm-table-widget.is-selected table[data-tcr]');
+    const sel=this._sel || (whole && {table:whole,path:whole.dataset.tcrPath,tid:this.tableId(whole),r1:0,c1:0,r2:whole.rows.length-1,c2:whole.rows[0].cells.length-1});
     if(!sel || !sel.table.isConnected || sel.path!==this.currentPath() || !e.clipboardData ||
-      e.target?.closest?.('input,textarea,.modal') || sel.table.closest('.cm-table-widget.is-selected'))return false;
+      e.target?.closest?.('input,textarea,.modal'))return false;
     const root=sel.table.closest('.cm-content'),targetRoot=e.target?.closest?.('.cm-content');
     if(root&&targetRoot&&!root.contains(e.target))return false;
-    const editor=this.activeEditor(),info=editor && this.tableSourceInfo(editor,sel.table);
+    const info=editor && this.tableSourceInfo(editor,sel.table);
     if(!info)return false;
     const rows=sel.axis==='row'?[...sel.indices].sort((a,b)=>a-b):Array.from({length:sel.r2-sel.r1+1},(_,i)=>sel.r1+i);
     const cols=sel.axis==='column'?[...sel.indices].sort((a,b)=>a-b):Array.from({length:sel.c2-sel.c1+1},(_,i)=>sel.c1+i);
@@ -1870,13 +1891,18 @@ module.exports = class TableColumnResize extends Plugin {
     }));
     const merges=complete
       .map(m=>({r:rows.indexOf(m.r),c:cols.indexOf(m.c),rowspan:m.rowspan,colspan:m.colspan}));
-    const alignment=cols.map(()=>null),payload={version:1,rows:grid,merges};
+    const layout=this.clipboardLayout(sel.table,sel.path,sel.tid,rows,cols);
+    const alignment=cols.map(()=>null),payload={version:2,rows:grid,merges,...layout};
     const plain=grid.map(row=>row.map(v=>{
       const text=this.sourceCellText(v.replace(/<br\s*\/?>/gi,'\n'));
       return /[\t\n"]/.test(text)?'"'+text.replace(/"/g,'""')+'"':text;
     }).join('\t')).join('\n');
     const html=document.createElement('table');
-    grid.forEach((row,r)=>{const tr=html.insertRow();row.forEach((value,c)=>{
+    html.style.tableLayout='fixed';html.style.borderCollapse='collapse';
+    const colgroup=html.appendChild(document.createElement('colgroup'));
+    layout.columnWidths.forEach(width=>{const col=colgroup.appendChild(document.createElement('col'));if(width)col.style.width=width;});
+    if(layout.columnWidths.every(Boolean))html.style.width=layout.columnWidths.reduce((sum,w)=>sum+parseFloat(w),0)+'px';
+    grid.forEach((row,r)=>{const tr=html.insertRow();if(layout.rowHeights[r])tr.style.height=layout.rowHeights[r];row.forEach((value,c)=>{
       const m=merges.find(m=>this.regionContains(m,r,c));if(m&&(m.r!==r||m.c!==c))return;
       const td=tr.insertCell();if(m){td.rowSpan=m.rowspan;td.colSpan=m.colspan;}
       value.split(/<br\s*\/?>/gi).forEach((part,i)=>{if(i)td.appendChild(document.createElement('br'));td.appendChild(document.createTextNode(this.sourceCellText(part)));});
@@ -1898,7 +1924,8 @@ module.exports = class TableColumnResize extends Plugin {
       if(!width||width>1000||width*rows.length>100000||rows.some(row=>!Array.isArray(row)||row.some(v=>typeof v!=='string')))return null;
       const grid=rows.map(row=>Array.from({length:width},(_,c)=>this.stripTableIdentity(row[c] || '').replace(/\r?\n/g,'<br>')));
       const merges=this.validMergeRegions({rows:grid.map(cells=>({cells}))},Array.isArray(payload.merges)?payload.merges.slice(0,grid.length*width):[]);
-      return {rows:grid,merges};
+      const sizes=(values,count)=>Array.from({length:count},(_,i)=>this.clipboardSize(Array.isArray(values)?values[i]:null));
+      return {rows:grid,merges,columnWidths:sizes(payload.columnWidths,width),rowHeights:sizes(payload.rowHeights,grid.length)};
     };
     for(const type of ['application/x-table-tune','obsidian/table']){
       const raw=data.getData(type);if(raw)try{const parsed=valid(JSON.parse(raw));if(parsed)return parsed;}catch(error){}
@@ -1907,13 +1934,22 @@ module.exports = class TableColumnResize extends Plugin {
     if(html){
       const doc=new DOMParser().parseFromString(html,'text/html'),table=doc.querySelector('table');
       if(table){
-        const rows=[],merges=[];let invalid=false;
+        const rows=[],merges=[],columnWidths=[],rowHeights=[];let invalid=false;
+        table.querySelectorAll('colgroup > col').forEach(col=>{
+          if(col.closest('table')!==table)return;
+          const size=this.clipboardSize(col.style.width || col.getAttribute('width'));
+          for(let i=0;i<Math.min(1000,col.span||1) && columnWidths.length<1000;i++)columnWidths.push(size);
+        });
         Array.from(table.rows).filter(tr=>tr.closest('table')===table).forEach((tr,r)=>{
           if(r>=1000){invalid=true;return;}rows[r] ||= [];let c=0;
+          rowHeights[r]=this.clipboardSize(tr.style.height || tr.getAttribute('height'));
           Array.from(tr.cells).forEach(cell=>{
             while(rows[r][c]!==undefined)c++;
             const rs=Math.min(1000,cell.rowSpan||1),cs=Math.min(1000,cell.colSpan||1);
             if(c+cs>1000||r+rs>1000||(r+rs)*(c+cs)>100000){invalid=true;return;}
+            const cellWidth=this.clipboardSize(cell.style.width || cell.getAttribute('width'));
+            if(cellWidth && cs===1 && !columnWidths[c])columnWidths[c]=cellWidth;
+            if(rs===1 && !rowHeights[r])rowHeights[r]=this.clipboardSize(cell.style.height || cell.getAttribute('height'));
             const copy=cell.cloneNode(true);copy.querySelectorAll('script,style').forEach(n=>n.remove());
             copy.querySelectorAll('br').forEach(br=>br.replaceWith('\n'));
             copy.querySelectorAll('p,div,li').forEach(block=>block.appendChild(doc.createTextNode('\n')));
@@ -1923,7 +1959,7 @@ module.exports = class TableColumnResize extends Plugin {
             c+=cs;
           });
         });
-        if(!invalid)return valid({rows,merges});return null;
+        if(!invalid)return valid({rows,merges,columnWidths,rowHeights});return null;
       }
     }
     const text=data.getData('text/plain');
@@ -1952,7 +1988,8 @@ module.exports = class TableColumnResize extends Plugin {
     if(!e.clipboardData||e.target?.closest?.('input,textarea,.modal'))return false;
     const cell=e.target?.closest?.('td,th'),targetTable=cell?.closest('table[data-tcr]');
     const sel=this._sel&&(!targetTable||targetTable===this._sel.table)?this._sel:null,table=targetTable || sel?.table;
-    if(!table?.isConnected || table.closest('.cm-table-widget.is-selected'))return false;
+    if(!table)return this.pasteNewClipboardTable(e);
+    if(!table.isConnected || table.closest('.cm-table-widget.is-selected'))return false;
     const root=table.closest('.cm-content'),targetRoot=e.target?.closest?.('.cm-content');
     if(root&&targetRoot&&!root.contains(e.target))return false;
     const path=table.dataset.tcrPath || this.currentPath(),editor=this.activeEditor();
@@ -1986,9 +2023,40 @@ module.exports = class TableColumnResize extends Plugin {
     for(const store of [this.widths,this.rowHeights,this.alignments])if(store?.[path]?.[oldTid]!==undefined){store[path][tid]=JSON.parse(JSON.stringify(store[path][oldTid]));}
     this.merges[path] ||= {};this.merges[path][tid]=regions.filter(m=>!overlaps(m)).concat(payload.merges.map(m=>({...m,r:r+m.r,c:c+m.c})));
     this.tableDims[path] ||= {};this.tableDims[path][tid]={rows,cols};
-    const widths=(this.getWidths(path,tid,cols)||[]).slice();while(widths.length<cols)widths.push('80px');this.setWidths(path,tid,widths);
+    const widths=(this.getWidths(path,tid,cols)||[]).slice();while(widths.length<cols)widths.push('80px');
+    payload.columnWidths.forEach((size,i)=>{if(size)widths[c+i]=size;});this.setWidths(path,tid,widths);
+    const heights=(this.getRowHeights(path,tid)||[]).slice();while(heights.length<rows)heights.push(null);
+    payload.rowHeights.forEach((size,i)=>{if(size)heights[r+i]=size;});this.setRowHeights(path,tid,heights);
     this.clearMergeSelection();this.persist();
     this.rekeyAfterSourceChange(path,tid,Math.max(0,this.tablePeers(table).indexOf(table)),table);
+    return true;
+  }
+
+  pasteNewClipboardTable(e) {
+    const editor=this.activeEditor(),root=e.target?.closest?.('.cm-content');
+    if(!editor?.getCursor || !root || !editor.cm?.dom?.contains(e.target))return false;
+    const payload=this.clipboardTable(e.clipboardData);if(!payload)return false;
+    const from=editor.getCursor('from'),to=editor.getCursor('to'),path=this.currentPath();
+    // Never replace an ordinary text selection spanning existing tables.
+    const doc=editor.getDoc(),line=i=>doc.getLine(i);
+    for(let i=from.line;i<=to.line;i++)if(this.isTableRowLine(line(i)))return false;
+    e.preventDefault();e.stopImmediatePropagation();
+    const uid='m'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),tid='u'+uid;
+    const grid=payload.rows.map(row=>row.map(text=>text.replace(/(?<!\\)\|/g,'\\|')));
+    grid[0][0]=this.encodeInvisibleUid(uid)+grid[0][0];
+    const text=[this.buildRow(grid[0]),this.buildRow(grid[0].map(()=> '---')),...grid.slice(1).map(row=>this.buildRow(row))].join('\n');
+    const before=line(from.line).slice(0,from.ch),after=line(to.line).slice(to.ch);
+    // A real Markdown header is the first copied row, not a blank header added
+    // by the native HTML converter. Separate the table from surrounding prose.
+    const prefix=before?'\n\n':from.line>0 && line(from.line-1).trim()?'\n':'';
+    const suffix=after?'\n\n':'\n';
+    try{this.replaceTableRange(editor,prefix+text+suffix,from,to);}
+    catch(error){new Notice('TableTune: 表格粘贴失败');return true;}
+    this.setWidths(path,tid,payload.columnWidths.map(size=>size || '80px'));
+    this.setRowHeights(path,tid,payload.rowHeights);
+    this.merges[path] ||= {};this.merges[path][tid]=payload.merges;
+    this.tableDims[path] ||= {};this.tableDims[path][tid]={rows:grid.length,cols:grid[0].length};
+    this.clearMergeSelection();this.persist();this.rekeyAfterSourceChange(path,tid,0,null);
     return true;
   }
 
