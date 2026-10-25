@@ -2,7 +2,7 @@
 
 A table-editing plugin for Obsidian, with stable column widths, merged cells and a compact icon toolbar.
 
-## Version 2.0.0
+## Version 2.0.1
 
 Requires **Obsidian 1.14.4 or newer**. Tested against Obsidian 1.14.4 on Windows; mobile behavior has not been verified.
 
@@ -41,6 +41,8 @@ Widths, heights, merge regions and alignments are stored in the plugin's `data.j
 Undo/redo is session history, not a persistent backup: operations performed before plugin reload or editor restart are not guaranteed to remain undoable. External clipboard support depends on formats supplied by the source application; arbitrary spreadsheet formatting is not preserved.
 
 ## 中文说明
+
+2.0.1 修复合并单元格后光标不出现、文字选区跳变，以及 Delete 无法删除选中文字的问题。
 
 2.0.0 新增合并/拆分单元格、连续矩形选区、文字优先拖选、跨应用表格粘贴、横向图标工具栏、水平与垂直对齐，以及原生撤销/重做。修复首行操作丢字、多表格相互影响、缩列宽边框错位及首次输入改变列宽等问题。
 
