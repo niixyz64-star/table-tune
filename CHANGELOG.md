@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 — 2026-10-25
+
+- Fixed merged cells retaining a native read-only selection after merging: the first click can now place a caret and edit text.
+- Preserved text selections against delayed native cell-focus callbacks, so selecting text and immediately pressing Delete works without selection or caret jumps.
+- Retained normal cell-range dragging, Shift selection, clipboard layout preservation and native undo/redo behavior.
+- Added regression coverage for horizontal/vertical merges, first-click editing, partial text deletion, delayed focus callbacks and stale native selection recovery. Regression tests use native selection/history code from Windows Obsidian 1.14.5; mobile behavior has not been verified.
+
 ## 2.0.0 — 2026-10-22
 
 ### Updated package — 2026-10-23

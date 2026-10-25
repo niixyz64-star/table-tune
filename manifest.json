@@ -1,7 +1,7 @@
 {
   "id": "table-tune",
   "name": "TableTune",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "minAppVersion": "1.14.4",
   "description": "Edit tables with stable widths, merged cells, text-first selection, clipboard support, alignment tools and native undo/redo. Layout is remembered per table.",
   "author": "DH mini",

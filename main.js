@@ -2061,14 +2061,34 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   // ---- cell selection (drag like a spreadsheet) ------------------------
+  resetNativeCellSelection(table) {
+    const session=this.activeEditor()?.editorComponent?.tableCell,native=session?.table;
+    if(!native || native.tableEl!==table)return;
+    const hadRange=!!(native.selectionAnchor || native.selectionHead || native.selectedCells?.length);
+    if(!hadRange && session.cm?.state?.readOnly!==true)return;
+    // Removing CSS paint does not release Obsidian's read-only cell editor.
+    // Use its own deselection path, then clear orphaned anchors as well (the
+    // native implementation skips cleanup when selectedCells is already empty).
+    if(typeof native.deselectCells==='function')native.deselectCells();
+    native.selectionAnchor=null;native.selectionHead=null;
+    native.containerEl?.classList?.remove('has-selection');
+    if(typeof native.updateCellReadonly==='function')native.updateCellReadonly();
+    // Native updateCellReadonly is debounced. Release it immediately so the
+    // very first click can place a caret instead of waiting for another click.
+    if(typeof session.setReadonly==='function')session.setReadonly(false);
+  }
+
   bindNativeTableSelection(table) {
     const native = this.activeEditor()?.editorComponent?.tableCell?.table;
     if (!native || native.tableEl !== table || typeof native.selectCells !== 'function' || !native.getCellAt) return null;
     if (!this._nativeSelectionBindings) this._nativeSelectionBindings = new Map();
     const existing=this._nativeSelectionBindings.get(native);
     if (existing) return native;
-    const plugin=this,original=native.selectCells;
+    const plugin=this,original=native.selectCells,originalFocus=native.setCellFocus;
     const wrapped=function(anchor,head,...args) {
+      if(plugin.ownsCellTextRange(table)){
+        plugin.resetNativeCellSelection(table);return;
+      }
       // A completed pointer range remains authoritative until the next user
       // gesture. Native mouseup/RAF callbacks may still carry an older anchor.
       const owned=plugin._pointerRange;
@@ -2093,8 +2113,19 @@ module.exports = class TableColumnResize extends Plugin {
       if (!(plugin._sel?.table===table && plugin._sel.axis)) plugin.selectRect(table,r1,c1,r2,c2,path,tid);
       return result;
     };
+    const focusWrapped=typeof originalFocus==='function'?function(...args){
+      const text=plugin.ownsCellTextRange(table);
+      // Native click/end callbacks may refocus the cell twice after release.
+      // An already-active cell editor owns its text range; do not rebuild it
+      // or replace that range with stale pointer coordinates.
+      if(text?.cm)return;
+      const result=originalFocus.apply(this,args);
+      if(text){const captured=plugin.captureCellTextRange(text);if(captured)plugin._textRange=captured;}
+      return result;
+    }:null;
     native.selectCells=wrapped;
-    this._nativeSelectionBindings.set(native,{table,original,wrapped});
+    if(focusWrapped)native.setCellFocus=focusWrapped;
+    this._nativeSelectionBindings.set(native,{table,original,wrapped,originalFocus,focusWrapped});
     return native;
   }
 
@@ -2103,6 +2134,7 @@ module.exports = class TableColumnResize extends Plugin {
     for (const [native,binding] of this._nativeSelectionBindings) {
       if (binding.table!==table) continue;
       if (native.selectCells===binding.wrapped) native.selectCells=binding.original;
+      if(binding.focusWrapped && native.setCellFocus===binding.focusWrapped)native.setCellFocus=binding.originalFocus;
       this._nativeSelectionBindings.delete(native);
     }
   }
@@ -2120,6 +2152,7 @@ module.exports = class TableColumnResize extends Plugin {
       nativeFrame = requestAnimationFrame(() => {
         nativeFrame = 0;
         if(table._tcrNativeRangeBlocked){
+          if(!this._sel || this._sel.table!==table)this.resetNativeCellSelection(table);
           table.querySelectorAll('.is-selected').forEach(cell=>cell.classList.remove('is-selected'));
           return;
         }
@@ -2195,11 +2228,13 @@ module.exports = class TableColumnResize extends Plugin {
       // pointerdown clears it in startCellDrag; only Shift navigation imports
       // native keyboard ranges, never an unrelated key or late callback.
       if(e.type==='keydown'){
+        if(['Delete','Backspace'].includes(e.key) && this.ownsCellTextRange(table)?.cm)this._textRange.keepCaret=true;
+        if(!['Delete','Backspace','Control','Meta','Shift','Alt'].includes(e.key))this._textRange=null;
         if(e.shiftKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End'].includes(e.key) &&
           (table.contains(e.target) || this.activeEditor()?.editorComponent?.tableCell?.table?.tableEl===table)){
           this._pointerRange=null;table._tcrNativeRangeBlocked=false;
         }
-      }else this._pointerRange=null;
+      }else {this._pointerRange=null;this._textRange=null;}
     };
     const releaseMouse=e=>{
       if(this._pointerRange===this._sel && this._sel?.table===table){e.preventDefault();e.stopImmediatePropagation();}
@@ -2226,6 +2261,7 @@ module.exports = class TableColumnResize extends Plugin {
     this._selectionTables.add(table);
     this.setupAxisRails(table);
     this.bindNativeTableSelection(table);
+    this.resetNativeCellSelection(table);
     if (table.querySelector('.is-selected')) syncNative();
   }
 
@@ -2419,6 +2455,31 @@ module.exports = class TableColumnResize extends Plugin {
       selection.toString().replace(/\s/g,'')===this.cellDragText(d.cell).replace(/\s/g,'');
   }
 
+  captureCellTextRange(d) {
+    const session=this.activeEditor()?.editorComponent?.tableCell,cm=session?.cm;
+    if(session?.table?.tableEl===d.table && d.cell.contains(cm?.contentDOM)){
+      const range=cm.state.selection.main;
+      if(range.from<range.to)return {table:d.table,cell:d.cell,session,cm};
+      return null;
+    }
+    const selection=d.table.ownerDocument.defaultView.getSelection();
+    if(selection && !selection.isCollapsed && d.cell.contains(selection.anchorNode) && d.cell.contains(selection.focusNode))
+      return {table:d.table,cell:d.cell};
+    return null;
+  }
+
+  ownsCellTextRange(table) {
+    const text=this._textRange;
+    if(!text || text.table!==table || !table.isConnected || !text.cell.isConnected)return null;
+    const session=this.activeEditor()?.editorComponent?.tableCell;
+    // Delete collapses the text range normally. Keep its resulting caret safe
+    // from a pending native release callback until the next deliberate intent.
+    if(text.keepCaret && text.cm && session===text.session && session.cm===text.cm && text.cell.contains(text.cm.contentDOM))return text;
+    const current=this.captureCellTextRange(text);
+    if(!current || (text.cm && current.cm!==text.cm))return null;
+    return current;
+  }
+
   startCellDrag(e, table, cell, path, tid) {
     this.bindNativeTableSelection(table);
     const start = this.logicalPointInCell(table, cell, e.clientX, e.clientY, path, tid);
@@ -2428,6 +2489,9 @@ module.exports = class TableColumnResize extends Plugin {
     if (!extending) this._cellSelectionAnchor = {table,path,tid,r:startR,c:startC};
     if (!extending) {
       this.clearMergeSelection();
+      // A previous merge may have replaced the DOM or cleared plugin state
+      // while the native editor still owns a read-only range.
+      this.resetNativeCellSelection(table);
       table.classList.add('tcr-cell-editing');
     }
     this._lastTableCell = { path, tid, r: startR, c: startC, time: Date.now() };
@@ -2489,6 +2553,7 @@ module.exports = class TableColumnResize extends Plugin {
         // Keep native click/focus handling intact so the caret can enter text.
         this.clearMergeSelection();
         if (d.textPending && d.textExit) this.selectCellDragText(d,true);
+        this._textRange=this.captureCellTextRange(d);
       }
       if(d?.active){
         ev.preventDefault();ev.stopImmediatePropagation();
@@ -2540,7 +2605,9 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   selectRect(table, r1, c1, r2, c2, path, tid) {
-    this.clearMergeSelection();
+    // Repainting/replacing a range is not the same as cancelling it. Keep
+    // the native keyboard range alive until a genuine clear or text click.
+    this.clearMergeSelection(true);
     const cells = this.completeSelectionCells(table, path, tid, r1, c1, r2, c2);
     const points = Array.from(cells, (key) => key.split(',').map(Number));
     const rows = points.map((p) => p[0]), cols = points.map((p) => p[1]);
@@ -2643,10 +2710,12 @@ module.exports = class TableColumnResize extends Plugin {
       height: (Math.max(...rects.map(r => r.bottom))-top)+'px' });
   }
 
-  clearMergeSelection() {
+  clearMergeSelection(preserveNative=false) {
     this._pointerRange=null;
+    this._textRange=null;
     const table=this._sel?.table;
     if(table){
+      if(!preserveNative)this.resetNativeCellSelection(table);
       table._tcrNativeRangeBlocked=true;
       table.querySelectorAll('.is-selected').forEach(cell=>cell.classList.remove('is-selected'));
     }
