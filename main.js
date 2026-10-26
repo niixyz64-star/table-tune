@@ -46,8 +46,8 @@ module.exports = class TableColumnResize extends Plugin {
     // immediately. (Toggling edit/reading does NOT fire file-open / leaf-change,
     // which is why this observer is required for the "switch and it refreshes"
     // behavior.)
-    this._mo = new MutationObserver(() => {
-      if (this._editRaf) return;
+    this._mo = new MutationObserver((records) => {
+      if (this._editRaf || !this.tableMutationsNeedScan(records)) return;
       this._editRaf = requestAnimationFrame(() => {
         this._editRaf = 0;
         this.scanEdit();
@@ -113,6 +113,7 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   onunload() {
+    if(this._cellDragCleanup)this._cellDragCleanup();
     this.uninstallSelectedCellCommands();
     if(this._historyOriginals)for(const [name,method] of this._historyOriginals)this[name]=method;
     if(this._columnDragCleanup)this._columnDragCleanup();
@@ -171,6 +172,22 @@ module.exports = class TableColumnResize extends Plugin {
     document
       .querySelectorAll('.markdown-preview-view table')
       .forEach((table) => this.enhance(table, { sourcePath: path }, false));
+  }
+
+  tableMutationsNeedScan(records) {
+    // Cursor blinks, toolbar icons and our own selection/resize controls must
+    // not cause a full pass over every table in the workspace. Keep observing
+    // actual cell edits and table mounts/removals, including hidden panes.
+    const controls='.tcr-handle,.tcr-row-handle,.tcr-axis-rail,.tcr-selection-rect,.tcr-merge-toolbar,.tcr-sel-edge,.cm-cursorLayer,.cm-selectionLayer';
+    return records.some(record=>{
+      const target=record.target.nodeType===1?record.target:record.target.parentElement;
+      if(target?.closest(controls))return false;
+      const nodes=[...record.addedNodes,...record.removedNodes].filter(node=>
+        !(node.nodeType===1 && node.matches(controls)));
+      if(!nodes.length)return false;
+      if(target?.closest('table'))return true;
+      return nodes.some(node=>node.nodeType===1 && (node.matches('table') || node.querySelector('table')));
+    });
   }
 
   scanEdit() {
@@ -845,7 +862,13 @@ module.exports = class TableColumnResize extends Plugin {
       this.markWrapChain(wrapper, preview);
       this.alignTableLeft(table);
     }
-    if (allowDrag && table._tcrAxisRails) this.positionAxisRails(table);
+    if (allowDrag) {
+      // Live Preview can cache and reattach an already-marked table after its
+      // listeners were cleaned up while detached. Restore interaction too.
+      this.setupCellSelection(table,path,tid);
+      this.setupAxisRails(table);
+      this.positionAxisRails(table);
+    }
     if (this._sel?.table === table) this.positionSelectionOverlay();
   }
 
@@ -2082,6 +2105,13 @@ module.exports = class TableColumnResize extends Plugin {
     const native = this.activeEditor()?.editorComponent?.tableCell?.table;
     if (!native || native.tableEl !== table || typeof native.selectCells !== 'function' || !native.getCellAt) return null;
     if (!this._nativeSelectionBindings) this._nativeSelectionBindings = new Map();
+    // The editor may replace its native controller without replacing the DOM.
+    // Retire wrappers belonging to previous controllers instead of retaining
+    // every old editor/selection through this map for the life of the note.
+    for(const [previous,binding] of this._nativeSelectionBindings){
+      if(!binding.table.isConnected || previous.tableEl!==binding.table ||
+        (binding.table===table && previous!==native))this.releaseNativeSelectionBinding(previous,binding);
+    }
     const existing=this._nativeSelectionBindings.get(native);
     if (existing) return native;
     const plugin=this,original=native.selectCells,originalFocus=native.setCellFocus;
@@ -2133,10 +2163,14 @@ module.exports = class TableColumnResize extends Plugin {
     if (!this._nativeSelectionBindings) return;
     for (const [native,binding] of this._nativeSelectionBindings) {
       if (binding.table!==table) continue;
-      if (native.selectCells===binding.wrapped) native.selectCells=binding.original;
-      if(binding.focusWrapped && native.setCellFocus===binding.focusWrapped)native.setCellFocus=binding.originalFocus;
-      this._nativeSelectionBindings.delete(native);
+      this.releaseNativeSelectionBinding(native,binding);
     }
+  }
+
+  releaseNativeSelectionBinding(native,binding) {
+    if (native.selectCells===binding.wrapped) native.selectCells=binding.original;
+    if(binding.focusWrapped && native.setCellFocus===binding.focusWrapped)native.setCellFocus=binding.originalFocus;
+    this._nativeSelectionBindings.delete(native);
   }
 
   setupCellSelection(table, path, tid) {
@@ -2245,6 +2279,9 @@ module.exports = class TableColumnResize extends Plugin {
     window.addEventListener('pointerdown',releaseIntent,true);
     window.addEventListener('keydown',releaseIntent,true);
     table._tcrSelectionCleanup = () => {
+      if(this._drag?.table===table && this._cellDragCleanup)this._cellDragCleanup();
+      if(this._textRange?.table===table)this._textRange=null;
+      if(this._cellSelectionAnchor?.table===table)this._cellSelectionAnchor=null;
       window.removeEventListener('click',releaseMouse,true);
       window.removeEventListener('pointerdown',releaseIntent,true);
       window.removeEventListener('keydown',releaseIntent,true);
@@ -2255,6 +2292,10 @@ module.exports = class TableColumnResize extends Plugin {
       table.removeEventListener('pointerdown', cellDown, true);
       table.removeEventListener('mousedown',shiftMouse,true);
       table.removeEventListener('contextmenu', contextMenu, true);
+      const rails=table._tcrAxisRails || [];
+      rails.forEach(rail=>this.removeAxisRail(rail));
+      if(this._axisRails)this._axisRails=this._axisRails.filter(rail=>!rails.includes(rail));
+      delete table._tcrAxisRails;
       delete table._tcrSelectionCleanup;
     };
     if (!this._selectionTables) this._selectionTables = new Set();
@@ -2268,7 +2309,12 @@ module.exports = class TableColumnResize extends Plugin {
   // Native handles live in cells that may be hidden by a rowspan/colspan.
   // Independent logical-axis rails keep every row and column reachable.
   setupAxisRails(table) {
-    if (table._tcrAxisRails) return;
+    if (table._tcrAxisRails?.every(rail=>rail.parentElement===table.parentElement && rail.isConnected)) return;
+    if(table._tcrAxisRails){
+      const stale=table._tcrAxisRails;
+      stale.forEach(rail=>this.removeAxisRail(rail));
+      if(this._axisRails)this._axisRails=this._axisRails.filter(rail=>!stale.includes(rail));
+    }
     table._tcrAxisRails = [];
     if (!this._axisRails) this._axisRails = [];
     const host = table.parentElement;
@@ -2481,6 +2527,10 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   startCellDrag(e, table, cell, path, tid) {
+    // A pointerup can be lost when a window loses focus, a drag is cancelled,
+    // or Live Preview replaces its widget. Never let callbacks from that
+    // gesture keep handling movements intended for a subsequent gesture.
+    if(this._cellDragCleanup)this._cellDragCleanup();
     this.bindNativeTableSelection(table);
     const start = this.logicalPointInCell(table, cell, e.clientX, e.clientY, path, tid);
     const previous = this._cellSelectionAnchor;
@@ -2498,9 +2548,11 @@ module.exports = class TableColumnResize extends Plugin {
     this._drag = { table, cell, path, tid, startR, startC, endR: start.r, endC: start.c,
       textPending: !extending && !!this.cellDragText(cell).trim(),
       x: e.clientX, y: e.clientY, active: !!extending };
+    const gesture=this._drag;
     if (extending) this.selectRect(table,startR,startC,start.r,start.c,path,tid);
     const onMove = (ev) => {
-      const d = this._drag; if (!d) return;
+      const d = this._drag; if (d!==gesture) return;
+      if(!table.isConnected){cancel();return;}
       if (d.textPending) {
         const rect=d.cell.getBoundingClientRect();
         const inside=ev.clientX>=rect.left && ev.clientX<=rect.right && ev.clientY>=rect.top && ev.clientY<=rect.bottom;
@@ -2533,7 +2585,7 @@ module.exports = class TableColumnResize extends Plugin {
     };
     const onTextMouseMove = ev => {
       const d=this._drag;
-      if (!d || d.table!==table) return;
+      if (d!==gesture) return;
       const rect=d.cell.getBoundingClientRect();
       if (d.active || (d.textPending && (ev.clientX<rect.left || ev.clientX>rect.right || ev.clientY<rect.top || ev.clientY>rect.bottom))) {
         // The compatibility mousemove follows pointermove. Do not let the
@@ -2545,10 +2597,8 @@ module.exports = class TableColumnResize extends Plugin {
       }
     };
     const onUp = (ev) => {
-      window.removeEventListener('pointermove', onMove, true);
-      window.removeEventListener('pointerup', onUp, true);
-      window.removeEventListener('mousemove', onTextMouseMove, true);
-      const d = this._drag; this._drag = null;
+      if(this._drag!==gesture){cleanup();return;}
+      const d = gesture;cleanup();
       if (d && !d.active) {
         // Keep native click/focus handling intact so the caret can enter text.
         this.clearMergeSelection();
@@ -2561,9 +2611,26 @@ module.exports = class TableColumnResize extends Plugin {
         this.refreshMergeToolbar();
       }
     };
+    const cleanup=()=>{
+      window.removeEventListener('pointermove',onMove,true);
+      window.removeEventListener('pointerup',onUp,true);
+      window.removeEventListener('mousemove',onTextMouseMove,true);
+      window.removeEventListener('pointercancel',cancel,true);
+      window.removeEventListener('blur',onWindowBlur,true);
+      if(this._drag===gesture)this._drag=null;
+      if(this._cellDragCleanup===cleanup)this._cellDragCleanup=null;
+    };
+    const cancel=()=>{
+      cleanup();
+      if(this._sel?.table===table)this.clearMergeSelection();
+    };
+    const onWindowBlur=ev=>{if(ev.target===window)cancel();};
+    this._cellDragCleanup=cleanup;
     window.addEventListener('pointermove', onMove, true);
     window.addEventListener('pointerup', onUp, true);
     window.addEventListener('mousemove', onTextMouseMove, true);
+    window.addEventListener('pointercancel',cancel,true);
+    window.addEventListener('blur',onWindowBlur,true);
   }
 
   logicalPointInCell(table, cell, x, y, path, tid) {

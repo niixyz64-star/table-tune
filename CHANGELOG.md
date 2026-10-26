@@ -2,6 +2,12 @@
 
 ## 2.0.1 — 2026-10-25
 
+### Updated package — 2026-10-26
+
+- Cleaned up interrupted pointer gestures and obsolete native editor wrappers; restored selection controls when Live Preview reuses a detached table widget.
+- Limited table rescans to table-related DOM changes. Verified interrupted gestures, 80 native-controller replacements, 100 cached-widget reuse cycles and text/cell selection after reuse.
+- Replaced the existing 2.0.1 package without changing the version number. Reinstall this version to receive the update.
+
 - Fixed merged cells retaining a native read-only selection after merging: the first click can now place a caret and edit text.
 - Preserved text selections against delayed native cell-focus callbacks, so selecting text and immediately pressing Delete works without selection or caret jumps.
 - Retained normal cell-range dragging, Shift selection, clipboard layout preservation and native undo/redo behavior.
